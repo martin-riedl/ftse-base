@@ -1,0 +1,195 @@
+package ftse.formalism.spa
+
+/* Process Algebra Composition Tuple */
+object PACT extends SPA {
+
+  val empty = PAT(Stop, SynchSets(Set[Action](),Set[Action](),Set[Action]()), List[ProcessDefinition]())
+  
+  abstract class PACT_Element(val syncset : SynchSets)
+  
+  /*
+   * Synchronisation Set for PACT
+   */
+  case class SynchSets(
+    consuming : Set[Action],
+    synchaction : Set[Action], 
+    unsynchaction : Set[Action] 
+  ) 
+  
+  /*
+   * Process Algebra Tuple 
+   */
+  case class PAT (
+    p : Process, 
+    override val syncset : SynchSets,
+    processdefinitions : List[ProcessDefinition]
+  ) extends PACT_Element(syncset)
+  
+  /*
+   * Process Algebra Composition
+   */
+  case class PAC(
+    lhs : PACT_Element, 
+    override val syncset : SynchSets, 
+    hidden : Set[Action], 
+    synched : Set[Action],
+    rhs : PACT_Element
+  ) extends PACT_Element(syncset)
+  
+  case class PACW(
+		  wrappedProcessDefinition : String,
+		  pact : PACT_Element,
+		  override val syncset : SynchSets,
+		  elements : Iterable[PACT_Element]
+  )  extends PACT_Element(syncset)
+  
+  /*
+   * PACT Composer Trait
+   */
+  trait Composer {
+    
+    // defining the || infix Operator using implicits
+    implicit def cmp(pact : PACT_Element) = new Composition(pact)    
+    
+    class Composition(lhs : PACT_Element) extends Composer{
+      def || (rhs : PACT_Element) = compose(lhs,rhs)
+    }
+    
+    /* 
+     * composes n PACT_Elements wrapped by an extra ProcessDefinition if wrappedProcessDefinition 
+     * label is defined or else just returns the composed process
+     */
+    def composeN(wrappedProcessDefinition : Option[String], elements : Iterable[PACT_Element]) : PACT_Element = {
+    	val pact = if (elements.size>0) elements.reduceLeft((a,b)=>compose(a,b)) else empty
+    	if (!wrappedProcessDefinition.isDefined) pact
+    	else PACW(wrappedProcessDefinition.get,pact,pact.syncset,elements)
+    }
+    
+    // defining the composition function used by the infix operator to generate PAC elements 
+    def compose (lhs : PACT_Element, rhs : PACT_Element) : PACT_Element = {
+ 	    val foundpartner =
+	    	lhs.syncset.consuming.map(a=>a.label) & (rhs.syncset.synchaction.map(a=>a.label) ++ rhs.syncset.unsynchaction.map(a=>a.label)) ++
+	    	rhs.syncset.consuming.map(a=>a.label) & (lhs.syncset.synchaction.map(a=>a.label) ++ lhs.syncset.unsynchaction.map(a=>a.label))
+     
+	    val foundpartner_actions = 
+	    	lhs.syncset.consuming.filter(e=>foundpartner.contains(e.label)).toList :::
+	    	lhs.syncset.synchaction.filter(e=>foundpartner.contains(e.label)).toList :::
+	    	lhs.syncset.unsynchaction.filter(e=>foundpartner.contains(e.label)).toList :::
+	    	rhs.syncset.consuming.filter(e=>foundpartner.contains(e.label)).toList :::
+	    	rhs.syncset.synchaction.filter(e=>foundpartner.contains(e.label)).toList :::
+	    	rhs.syncset.unsynchaction.filter(e=>foundpartner.contains(e.label)).toList 
+     
+        
+        val synched = 
+        	lhs.syncset.synchaction.map(a=>a.label) & rhs.syncset.synchaction.map(a=>a.label) ++ foundpartner_actions.map(a=>a.label)
+
+        val synched_actions = 
+        	(lhs.syncset.synchaction ++ rhs.syncset.synchaction ++ foundpartner_actions).filter(a=>synched.contains(a.label))
+          
+     	    
+	    val consuming_action = (lhs.syncset.consuming ++ rhs.syncset.consuming) -- foundpartner_actions
+        val syncset_action = (lhs.syncset.synchaction ++ rhs.syncset.synchaction) -- foundpartner_actions
+        val unsyncset_action = (lhs.syncset.unsynchaction ++ rhs.syncset.unsynchaction) -- foundpartner_actions
+        
+     
+	    val immediateactions = Set[String]((for (action <- (
+	      lhs.syncset.consuming ++ lhs.syncset.synchaction ++ lhs.syncset.unsynchaction ++ 
+	      rhs.syncset.consuming ++ rhs.syncset.synchaction ++ rhs.syncset.unsynchaction ).toList) yield 
+                                           action match {
+	      case i : IA => Some(i.label)
+	      case _ => None
+	    }).filter(_.isDefined).map(_.get) : _*)
+     
+	    
+	    val hidden = immediateactions & foundpartner
+        val hidden_actions = Set(foundpartner_actions.filter(p=>hidden.contains(p.label)) : _*)   
+     
+	    val localsynchset = SynchSets(consuming_action,syncset_action,unsyncset_action)
+	    PAC(lhs, localsynchset,hidden_actions,synched_actions ,rhs)    
+	  }
+  }
+  
+  /*
+   * PACT ReFiner: determines synchronisations more finegrained... 
+   */
+  trait ReFiner {
+    def refine(pact : PACT_Element) : PACT_Element = refine(pact, Set())
+    
+    def refine(pact : PACT_Element, backpropagation : Set[Action]) : PACT_Element = pact match {
+      case PAC(lhs, localsynchset,hidden_actions,synched_actions ,rhs) => {
+        val newbpg = backpropagation ++ synched_actions
+        val additionalhides = synched_actions.map(_.label) -- backpropagation.map(_.label) 
+        val newhides = synched_actions.filter(a=>additionalhides.contains(a.label))
+                
+        val pac = PAC(
+            refine(lhs, newbpg), 
+            localsynchset,newhides, synched_actions ,
+            refine(rhs, newbpg))
+        pac
+      }
+      case a => a
+    }
+  }
+  
+ 
+  /*
+   * PACT decomposer trait: decomposing a PACT structure by process algebra term replacement
+   */
+  trait DeComposer {
+	private def decomposePACW(pacw:PACW) = {
+		val pat=decompose(pacw.pact)
+		val mPD = {
+			(pacw.wrappedProcessDefinition ,List[PPD]()) := List(pat.p)
+		}
+	     	   
+	    PAT(I(pacw.wrappedProcessDefinition,List()),pacw.syncset, pat.processdefinitions ::: List(mPD))
+	}
+	
+    def decompose(pact : PACT_Element) : PAT = pact match {
+	      case p : PAT => p
+	      case PAC(lhs,synchset,hidden,synched,rhs) => {
+	        val a = decompose(lhs)
+	        val b = decompose(rhs) 
+	        	        
+	          if (hidden.size>0) 
+	            PAT(Hiding(hidden.map(_.label), a.p | synched.map(_.label) | b.p),synchset,a.processdefinitions ++ b.processdefinitions)
+	          else 
+	            PAT(a.p | synched.map(_.label) | b.p,synchset,a.processdefinitions ++ b.processdefinitions)
+	      	}
+	      case pacw : PACW => decomposePACW(pacw)
+    }
+    
+    def decomposeNoHide(pact : PACT_Element) : PAT = pact match {
+	      case p : PAT => p
+	      case PAC(lhs,synchset,hidden,synched,rhs) => {
+	        val a = decomposeNoHide(lhs)
+	        val b = decomposeNoHide(rhs) 
+	        PAT(a.p | synched.map(_.label) | b.p,synchset,a.processdefinitions ++ b.processdefinitions)
+	      }
+	      case  pacw : PACW => decomposePACW(pacw)
+      }
+  }
+  
+  class Serialize(pact : PACT_Element) {
+    def visualize = {
+		  import sys.process._
+		  ("echo " + toDot) #| "/usr/bin/dot -Tsvg" #| "/usr/bin/rsvg-view -w 1000 -k --stdin" !
+    }
+
+    def toDot() : String = {
+      "digraph G {\n" +
+       toDot(pact)._2 +
+      "\n}"
+    }
+
+    var counter = 0
+    
+    def toDot(pact : PACT_Element) : (Int, String)= {
+      
+      pact match {
+      	case PAT(p,d,e) => {
+      	  counter +=1
+      	  val nodecount = counter
+      	  val node = p match {
+      		  case instantiation : I => nodecount.toString + " [shape=box, label=\""+instantiation.ref+" "+"\"]"
+      		  case Stop => nodecount.toString + " [style=filled shape=hexagon color=red fontcolor=red fillcolor=black label=\""+"

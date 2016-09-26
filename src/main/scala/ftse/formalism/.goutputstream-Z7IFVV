@@ -1,0 +1,143 @@
+package ftse.formalism
+
+trait LogicExpr_algo {
+	implicit def algorithms(lexp : LogicalExpr) = new LExprAlgo(lexp)	
+}
+
+class LExprAlgo(lexp : LogicalExpr) extends LogicExprAlgo {
+		def modify(matcher : LogicalExpr => LogicalExpr = identity[LogicalExpr](_)) = modifyRek(lexp,matcher)
+}
+
+trait LogicExprAlgo {
+	def modifyRek(l : LogicalExpr,f: LogicalExpr => LogicalExpr) : LogicalExpr = l match {
+		case Conjunct(lhs,rhs) => f(Conjunct((modifyRek(lhs,f)), (modifyRek(rhs,f))))
+		case Disjunct(lhs,rhs) => f(Disjunct((modifyRek(lhs,f)), (modifyRek(rhs,f))))
+		case Negate(expr) => f(Negate((modifyRek(expr,f))))
+		case expr => f(expr)
+	}
+}
+
+
+abstract class AbstrLogicExprBdd(le: LogicalExpr) {
+	import jdd.bdd._
+	
+	val bdd : BDD = new BDD(10000)
+    
+  // Hashmaps to save the relationship between Atom and the Integer representing the variable
+  	val var_hash = new scala.collection.mutable.HashMap[Int, LExpAtom]
+	val name_hash = new scala.collection.mutable.HashMap[LExpAtom, Int]
+	val root = rek_toBDD(le)
+		
+	def rek_toBDD(le : LogicalExpr) : Int = le match {
+		//case for logical or
+		case Disjunct(l: LogicalExpr, r: LogicalExpr) => {
+		  bdd or(rek_toBDD(l), rek_toBDD(r))
+		}
+		//case for logical and
+		case Conjunct(l: LogicalExpr, r: LogicalExpr) => {
+		  bdd and(rek_toBDD(l), rek_toBDD(r))
+		}
+		//case for logical not
+		case Negate(arg: LogicalExpr) => {
+		  bdd not(rek_toBDD(arg))
+		}
+		case atom : LExpAtom => rek_toBDD(atom)
+  }
+  
+  
+  def rek_toBDD(elem : LExpAtom) : Int = elem match {
+		case le : LExpAtom => { 
+		      val v = name_hash.get(le)
+		      if (v.isDefined) {
+		        //if the given String already exists return that variable
+		        return v.get
+		      } else {
+		        //else create a new variable and save the relationship in a HashMap
+		          val v = bdd.createVar()
+		          var_hash += ((v, le))
+		          name_hash += ((le, v))
+		          v 
+		      }
+		}
+	}
+  
+  def reachReverseBDD() = {
+	    //HashSet containing all nodes of the given BDD
+        val marked = new scala.collection.mutable.HashSet[Int]()
+        //a queue with the getHighs and getLows of the actual node
+        val queue = new scala.collection.mutable.Queue[Int]()
+        //actual node is added to the queue and the actual node is added to the marked
+        queue.enqueue(root); marked += root	
+        // REACHABILITY GRAPH 
+       
+        val G = new scala.collection.mutable.HashMap[Int,List[(Int,Boolean)]]()
+        
+        //the breadthsearch to build up the marked list
+        do {
+          val node = queue.dequeue
+          val high_node = bdd.getHigh(node)
+          val low_node = bdd.getLow(node)
+          
+          // update reachability graph
+          G.put(high_node,  ((node,true) :: G.get(high_node).getOrElse(List[(Int,Boolean)]())))
+          G.put(low_node,  ((node,false) :: G.get(low_node).getOrElse(List[(Int,Boolean)]())))
+          
+          //the gethigh of the node
+          if (bdd.getHigh(node)>1 && !marked.contains(high_node)) {
+            
+            
+            queue.enqueue(high_node); marked += high_node
+          }
+          //the getlow of the node
+          if (bdd.getLow(node)>1 && !marked.contains(low_node)) {
+            
+            queue.enqueue(low_node); marked += low_node
+          }
+          
+        } while (!queue.isEmpty)
+       
+        scala.collection.immutable.HashMap[Int,List[(Int,Boolean)]](G.toList :_*)
+  }
+  
+  def obtainSatPaths(toTrue : Boolean = true) : (List[LExpAtom],List[List[(LExpAtom,Boolean)]]) = {
+  	  // obtain the reachability structure by calling reachReverseBDD
+	  val structure = reachReverseBDD
+	  // sort variable hash keys
+	  val var_hash_keys = var_hash.keys.toList.sortWith((e1,e2)=>e1<e2)
+	  
+	  // rekursive function definition to determine sat paths
+	  def determinePaths_rek(current : Int=1, ns : List[(Int,Boolean)]=List()) : List[List[(Int,Boolean)]] = {
+	 	  val c = structure.get(current)
+	 	  if (c.isDefined) {
+	 	 	  c.get.map(a=> {
+		 	 	  determinePaths_rek(a._1,ns.+:(a))
+		 	  }).flatten(a=>a)
+	 	  } else List(ns)
+	  }
+	  
+	  // determine all paths by starting with either the 1 or the 0 leaf node
+	  val paths = determinePaths_rek(if (toTrue) 1 else 0)
+
+	  
+	  val named_paths = paths.map(p => p.map(entry => (var_hash(var_hash_keys(bdd.getVar(entry._1))),entry._2)))
+	  
+	  val variables = (0 to bdd.numberOfVariables()-1).map(var_hash_keys(_)).map(var_hash(_)).toList
+	  
+	  (variables,named_paths)
+  }
+
+
+  def obtainSatPathsExplicit(toTrue : Boolean = true) : (List[LExpAtom],List[List[(LExpAtom,Boolean)]]) = {
+	  // obtain the reachability structure by calling reachReverseBDD
+	  val structure = reachReverseBDD
+	  // sort variable hash keys
+	  val var_hash_keys = var_hash.keys.toList.sortWith((e1,e2)=>e1<e2)
+  	  def map(n : Int) = var_hash(var_hash_keys(bdd.getVar(n)))
+	  
+	  // rekursive function definition to determine sat paths
+	  def determinePaths_rek(current : Int=1, ns : List[List[(Int,Boolean)]]=List(List())) : List[List[(Int,Boolean)]] = {
+	 	  val c = structure.get(current)
+	 	  if (c.isDefined) {
+	 	 	  c.get.map(a=> {
+	 	 	 	  
+	 	 	 	  // bestimmen 
