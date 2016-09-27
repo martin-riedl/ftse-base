@@ -1,10 +1,11 @@
-package scalaxb
+package ftse.formalism.timenet
 
 import scala.xml.{Node, NodeSeq, NamespaceBinding, Elem, UnprefixedAttribute, PrefixedAttribute}
 import javax.xml.datatype.{XMLGregorianCalendar}
 import javax.xml.namespace.QName
 import javax.xml.bind.DatatypeConverter
 
+package scalaxb {
 object `package` {
   import annotation.implicitNotFound
 
@@ -924,3 +925,4 @@ object Helper {
 }
 
 class ParserFailure(message: String) extends RuntimeException(message)
+}
