@@ -12,6 +12,11 @@ libraryDependencies += "de.fosd.typechef" % "javabdd_repackaged" % "1.0b2"
 
 //lazy val jbdd = ProjectRef(uri("git://github.com/martin-riedl/JavaBDD_repackaged#master"), "javabdd_repackaged") 
 //scalaVersion in jbdd := "2.11.8"
+
+
+libraryDependencies += "javax.xml.bind" % "jaxb-api" % "2.3.1"
+libraryDependencies += "org.glassfish.jaxb" % "jaxb-runtime" % "2.3.1"
+
  
 lazy val commonSettings = Seq(
   organization := "ftse",
